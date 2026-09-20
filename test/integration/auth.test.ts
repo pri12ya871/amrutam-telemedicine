@@ -6,6 +6,7 @@ import {
   databaseAvailable, prepareDatabase, registerAndLogin, uniqueEmail, STRONG_PASSWORD,
 } from './helpers.ts';
 import { closePool, query } from '../../src/db/pool.ts';
+import { closeCache } from '../../src/cache/redis.ts';
 import { totp } from '../../src/lib/totp.ts';
 
 describe('authentication', async () => {
@@ -22,6 +23,8 @@ describe('authentication', async () => {
   });
 
   after(async () => {
+    // Both pools hold open handles; without this the test process never exits.
+    await closeCache();
     await closePool();
   });
 

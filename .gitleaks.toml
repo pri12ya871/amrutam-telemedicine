@@ -1,0 +1,25 @@
+# gitleaks configuration.
+#
+# The default rule set is kept in full. The allowlist below covers values that
+# are deliberately committed and deliberately worthless: test and CI fixtures,
+# and the placeholders in .env.example. Every real secret reaches the service
+# through the environment and never through a file in this repository.
+#
+# Scoped to specific paths rather than to regexes on the values themselves, so
+# a genuine credential committed anywhere else still fails the build.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Committed test and example fixtures — throwaway values, never used anywhere real"
+paths = [
+  '''^\.env\.example$''',
+  '''^\.env\.test$''',
+  '''^\.github/workflows/ci\.yml$''',
+  '''^docker-compose\.yml$''',
+  '''^scripts/seed\.ts$''',
+  '''^test/''',
+  '''^docs/''',
+  '''^README\.md$''',
+]

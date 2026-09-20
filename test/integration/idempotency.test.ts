@@ -7,6 +7,7 @@ import {
   createBookableDoctor, databaseAvailable, prepareDatabase, registerAndLogin,
 } from './helpers.ts';
 import { closePool, query } from '../../src/db/pool.ts';
+import { closeCache } from '../../src/cache/redis.ts';
 
 /**
  * Idempotency is one of the two stated fail conditions for this brief, so it
@@ -28,6 +29,8 @@ describe('idempotent writes', async () => {
   });
 
   after(async () => {
+    // Both pools hold open handles; without this the test process never exits.
+    await closeCache();
     await closePool();
   });
 

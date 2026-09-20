@@ -84,7 +84,7 @@ jobs:
       - name: Apply migrations
         run: npm run migrate
       - name: Integration tests
-        run: npm run test:integration
+        run: npm run test:integration:ci
 
   security:
     name: Security scanning

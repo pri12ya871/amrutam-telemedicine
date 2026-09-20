@@ -7,6 +7,7 @@ import {
   createBookableDoctor, databaseAvailable, prepareDatabase, registerAndLogin,
 } from './helpers.ts';
 import { closePool, query } from '../../src/db/pool.ts';
+import { closeCache } from '../../src/cache/redis.ts';
 
 /**
  * The test this whole design exists to pass.
@@ -29,6 +30,8 @@ describe('booking under concurrency', async () => {
   });
 
   after(async () => {
+    // Both pools hold open handles; without this the test process never exits.
+    await closeCache();
     await closePool();
   });
 
