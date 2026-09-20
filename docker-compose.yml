@@ -1,0 +1,110 @@
+# Full local stack: API, Postgres, Redis, Prometheus, Grafana and Jaeger.
+#
+#   docker compose up -d          # everything
+#   docker compose up -d api db   # just the service and its database
+#
+# The observability services are in the `observability` profile so the common
+# case does not pay for them.
+
+name: amrutam
+
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://amrutam:amrutam@db:5432/amrutam
+      REDIS_URL: redis://cache:6379
+      # Development values only. In any real environment these come from the
+      # platform's secret store and never appear in a compose file.
+      JWT_SECRET: local-development-only-secret-at-least-32-chars
+      DATA_MASTER_KEY: bG9jYWwtZGV2LW9ubHktMzItYnl0ZS1rZXktMDAwMDA=
+      DATA_KEY_ID: local
+      IP_HASH_SALT: local-development-ip-salt
+      OTEL_ENABLED: 'true'
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: amrutam
+      POSTGRES_PASSWORD: amrutam
+      POSTGRES_DB: amrutam
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # The API waits on this, so it must report ready rather than merely
+    # running — Postgres accepts connections briefly during init and then
+    # restarts, which would let the API connect and immediately fail.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U amrutam -d amrutam']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command:
+      - postgres
+      # Log anything slower than the write SLO so the slow-query list matches
+      # the latency target rather than an arbitrary default.
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - max_connections=200
+
+  cache:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ['observability']
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ['observability']
+    ports:
+      - '3001:3000'
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    profiles: ['observability']
+    ports:
+      - '16686:16686' # UI
+      - '4318:4318'   # OTLP/HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: 'true'
+
+volumes:
+  pgdata:

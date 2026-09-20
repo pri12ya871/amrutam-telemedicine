@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch makes the first run's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Unit tests
+        run: npm run test:unit
+
+  integration:
+    name: Integration tests (Postgres + Redis)
+    runs-on: ubuntu-latest
+
+    # Real Postgres and Redis. The booking tests assert the behaviour of
+    # Postgres's own concurrency control, so an in-memory substitute would
+    # verify nothing that matters.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: amrutam
+          POSTGRES_PASSWORD: amrutam
+          POSTGRES_DB: amrutam_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U amrutam -d amrutam_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      LOG_LEVEL: silent
+      DATABASE_URL: postgresql://amrutam:amrutam@localhost:5432/amrutam_test
+      DATABASE_POOL_MAX: 30
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-secret-that-is-long-enough-for-validation
+      DATA_MASTER_KEY: Y2ktb25seS0zMi1ieXRlLWtleS0wMDAwMDAwMDAwMDA=
+      DATA_KEY_ID: ci
+      IP_HASH_SALT: ci-only-ip-hash-salt
+      WORKER_ENABLED: 'false'
+      OTEL_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations
+        run: npm run migrate
+      - name: Integration tests
+        run: npm run test:integration
+
+  security:
+    name: Security scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Secret scanning needs history to check what was committed, not
+          # just the current tree.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Fails the build on a high or critical advisory in a production
+      # dependency. Dev-only advisories are reported but do not block.
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Static analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+
+  image:
+    name: Container build and scan
+    runs-on: ubuntu-latest
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: amrutam-telemedicine:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Scans the image we actually built, not just the manifests — this
+      # catches vulnerable OS packages in the base image too.
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: amrutam-telemedicine:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Smoke test the image
+        run: |
+          docker run -d --name smoke \
+            -e DATABASE_URL=postgresql://nobody@127.0.0.1:5432/none \
+            -e JWT_SECRET=smoke-test-secret-that-is-long-enough-here \
+            -e DATA_MASTER_KEY=c21va2UtdGVzdC0zMi1ieXRlLWtleS0wMDAwMDAwMA== \
+            -e IP_HASH_SALT=smoke-test-salt \
+            -p 3000:3000 amrutam-telemedicine:${{ github.sha }}
+          # The database is deliberately absent: liveness must still answer,
+          # which proves the process starts and serves before its dependencies
+          # are reachable. Readiness returning 503 here is the correct answer.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/health/live; then exit 0; fi
+            sleep 2
+          done
+          docker logs smoke
+          exit 1

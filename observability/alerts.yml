@@ -1,0 +1,81 @@
+# Alerts derived from the stated SLOs, not from round numbers.
+#
+# Each one names the user-visible symptom it protects. An alert that cannot be
+# traced back to something a patient or doctor would notice is noise, and noise
+# is what makes on-call ignore the pager that matters.
+
+groups:
+  - name: slo
+    rules:
+      # SLO: p95 reads under 200ms.
+      - alert: ReadLatencySLOBreach
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(amrutam_http_request_duration_seconds_bucket{method="GET"}[5m]))
+          ) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'p95 read latency above the 200ms SLO'
+          description: 'Patients are waiting on search and availability pages.'
+
+      # SLO: p95 writes under 500ms.
+      - alert: WriteLatencySLOBreach
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(amrutam_http_request_duration_seconds_bucket{method="POST"}[5m]))
+          ) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'p95 write latency above the 500ms SLO'
+
+      # SLO: 99.95% availability leaves ~21 minutes of error budget per month,
+      # so a sustained 1% error rate is already significant.
+      - alert: ErrorBudgetBurn
+        expr: |
+          sum(rate(amrutam_http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(amrutam_http_requests_total[5m])) > 0.01
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: '5xx rate above 1% — burning the monthly error budget'
+
+  - name: domain
+    rules:
+      # Not a latency problem: bookings are failing for reasons other than
+      # ordinary contention, which contention alone would show as slot_taken.
+      - alert: BookingErrorsRising
+        expr: rate(amrutam_booking_attempts_total{outcome="error"}[5m]) > 0.5
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Bookings are erroring, not merely losing races'
+
+      # The outbox backing up means notifications are not going out, even
+      # though every HTTP request still looks healthy.
+      - alert: OutboxBacklog
+        expr: amrutam_outbox_pending > 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Domain event backlog above 1000 — the relay is falling behind'
+
+      - alert: DatabaseLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(amrutam_db_query_duration_seconds_bucket[5m]))
+          ) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'p95 query latency above 100ms — check for a missing index or lock contention'
+
+      # Not an outage: Redis is optional by design. It is a warning because
+      # the database is now taking traffic the cache used to absorb.
+      - alert: CacheDown
+        expr: rate(amrutam_cache_operations_total{result="error"}[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Cache erroring — service is degraded but serving'

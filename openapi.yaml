@@ -1,0 +1,1516 @@
+openapi: 3.1.0
+info:
+  title: Amrutam Telemedicine API
+  version: 1.0.0
+  description: >-
+    Backend for consultations, doctor availability and prescriptions.
+
+
+    ## Idempotency
+
+    Every non-idempotent write requires an `Idempotency-Key` header. Retrying
+    with the
+
+    same key replays the original response rather than repeating the side
+    effect. Keys
+
+    are scoped per user and expire after 24 hours.
+
+
+    ## Errors
+
+    Every error is `{ "error": { "code", "message", "requestId" } }`. Quote
+    `requestId`
+
+    in a support request — it correlates the response with logs and traces.
+
+
+    ## Rate limits
+
+    Responses carry `RateLimit-Limit` and `RateLimit-Remaining`. Exceeding a
+    limit returns
+
+    429 with `Retry-After`.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Local
+tags:
+  - name: Auth
+    description: Registration, login, MFA and token rotation
+  - name: Doctors
+    description: Doctor profiles, search and verification
+  - name: Availability
+    description: Recurring rules and materialised slots
+  - name: Bookings
+    description: Slot claim, hold and cancellation
+  - name: Payments
+    description: Payment capture and the booking saga
+  - name: Consultations
+    description: Consultation lifecycle and clinical notes
+  - name: Prescriptions
+    description: Encrypted prescriptions
+  - name: Admin
+    description: Analytics and audit trail
+  - name: Operations
+    description: Health and metrics
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from POST /auth/login. Expires in 15 minutes; rotate
+        with /auth/refresh.
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: SLOT_UNAVAILABLE
+            message:
+              type: string
+            details: {}
+            requestId:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
+    TokenPair:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: string
+          example: 15m
+        tokenType:
+          type: string
+          enum:
+            - Bearer
+      required:
+        - accessToken
+        - refreshToken
+        - expiresIn
+        - tokenType
+    BookingResult:
+      type: object
+      properties:
+        consultationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: pending_payment
+        scheduledAt:
+          type: string
+          format: date-time
+        doctorId:
+          type: string
+          format: uuid
+        holdExpiresAt:
+          type: string
+          format: date-time
+          description: The slot is released automatically if payment is not captured
+            before this time.
+        payment:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            amountPaise:
+              type: integer
+            currency:
+              type: string
+            status:
+              type: string
+          required:
+            - id
+            - amountPaise
+            - currency
+            - status
+      required:
+        - consultationId
+        - status
+        - scheduledAt
+        - doctorId
+        - holdExpiresAt
+        - payment
+  parameters: {}
+paths:
+  /api/v1/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register a patient or doctor account
+      description: Admin accounts cannot be self-registered. A doctor account is
+        created unverified and cannot accept bookings until an administrator
+        verifies the medical registration number.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  maxLength: 254
+                  format: email
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+                fullName:
+                  type: string
+                  minLength: 2
+                  maxLength: 120
+                role:
+                  type: string
+                  enum:
+                    - patient
+                    - doctor
+                  default: patient
+                phone:
+                  type: string
+                  pattern: ^\+?[0-9]{8,15}$
+              required:
+                - email
+                - password
+                - fullName
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                      role:
+                        type: string
+                    required:
+                      - id
+                      - email
+                      - role
+                required:
+                  - data
+        "400":
+          description: Validation failed — password policy or malformed input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Exchange credentials for a token pair
+      description: Returns 401 both for an unknown account and a wrong password,
+        deliberately, so the endpoint cannot be used to enumerate accounts. Five
+        failures lock the account for 15 minutes. If MFA is enabled, `totp` is
+        required.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  maxLength: 254
+                  format: email
+                password:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                totp:
+                  type: string
+                  pattern: ^\d{6}$
+              required:
+                - email
+                - password
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/TokenPair"
+                required:
+                  - data
+        "401":
+          description: Invalid credentials, or MFA code required/incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Account locked or not active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Rotate a refresh token
+      description: "Single-use. Presenting an already-used token is treated as theft:
+        the entire token family is revoked and every session for that user
+        ends."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+                  minLength: 20
+                  maxLength: 512
+              required:
+                - refreshToken
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/TokenPair"
+                required:
+                  - data
+        "401":
+          description: Invalid, expired, revoked, or reused token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Revoke a refresh-token family
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+                  minLength: 20
+                  maxLength: 512
+              required:
+                - refreshToken
+      responses:
+        "204":
+          description: Logged out (idempotent)
+  /api/v1/auth/mfa/setup:
+    post:
+      tags:
+        - Auth
+      summary: Begin TOTP enrolment
+      security:
+        - bearerAuth: []
+      description: Returns a secret and an otpauth:// URI for a QR code. MFA is not
+        active until confirmed.
+      responses:
+        "200":
+          description: Enrolment started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      secret:
+                        type: string
+                      otpauthUri:
+                        type: string
+                    required:
+                      - secret
+                      - otpauthUri
+                required:
+                  - data
+        "409":
+          description: MFA already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/mfa/confirm:
+    post:
+      tags:
+        - Auth
+      summary: Activate TOTP after verifying a code
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                totp:
+                  type: string
+                  pattern: ^\d{6}$
+              required:
+                - totp
+      responses:
+        "200":
+          description: MFA enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      mfaEnabled:
+                        type: boolean
+                    required:
+                      - mfaEnabled
+                required:
+                  - data
+        "401":
+          description: Invalid code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Current token identity
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      role:
+                        type: string
+                      mfaSatisfied:
+                        type: boolean
+                    required:
+                      - id
+                      - role
+                      - mfaSatisfied
+                required:
+                  - data
+  /api/v1/doctors:
+    get:
+      tags:
+        - Doctors
+      summary: Search and filter doctors
+      description: Public. Results are cached for 60 seconds; only verified, active
+        doctors are returned.
+      parameters:
+        - schema:
+            type: string
+            maxLength: 100
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+            maxLength: 64
+          required: false
+          name: specialization
+          in: query
+        - schema:
+            type: string
+            maxLength: 32
+          required: false
+          name: language
+          in: query
+        - schema:
+            type: string
+            maxLength: 80
+          required: false
+          name: city
+          in: query
+        - schema:
+            type:
+              - integer
+              - "null"
+            minimum: 0
+            maximum: 70
+          required: false
+          name: minExperience
+          in: query
+        - schema:
+            type:
+              - integer
+              - "null"
+            minimum: 0
+          required: false
+          name: maxFeePaise
+          in: query
+        - schema:
+            type: string
+            enum:
+              - rating
+              - fee_asc
+              - fee_desc
+              - experience
+            default: rating
+          required: false
+          name: sort
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type:
+              - integer
+              - "null"
+            minimum: 0
+            maximum: 10000
+            default: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Matching doctors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: {}
+                      total:
+                        type: number
+                    required:
+                      - items
+                      - total
+                required:
+                  - data
+  /api/v1/doctors/{id}:
+    get:
+      tags:
+        - Doctors
+      summary: Doctor profile
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Doctor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/doctors/{id}/slots:
+    get:
+      tags:
+        - Doctors
+        - Availability
+      summary: Bookable slots for a date range
+      description: Cached for 30 seconds. A slot listed here can still be taken before
+        you book it — expect 409.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+            format: date
+          required: true
+          name: from
+          in: query
+        - schema:
+            type: string
+            format: date
+          required: true
+          name: to
+          in: query
+      responses:
+        "200":
+          description: Available slots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {}
+                required:
+                  - data
+  /api/v1/doctors/profile:
+    post:
+      tags:
+        - Doctors
+      summary: Create the calling doctor's profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                registrationNo:
+                  type: string
+                  minLength: 3
+                  maxLength: 64
+                specializations:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 2
+                    maxLength: 64
+                  minItems: 1
+                  maxItems: 10
+                languages:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 2
+                    maxLength: 32
+                  minItems: 1
+                  maxItems: 10
+                yearsExperience:
+                  type: integer
+                  minimum: 0
+                  maximum: 70
+                consultationFeePaise:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000000
+                city:
+                  type: string
+                  minLength: 2
+                  maxLength: 80
+                bio:
+                  type: string
+                  maxLength: 2000
+              required:
+                - registrationNo
+                - specializations
+                - languages
+                - yearsExperience
+                - consultationFeePaise
+      responses:
+        "201":
+          description: Created, pending verification
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      status:
+                        type: string
+                    required:
+                      - id
+                      - status
+                required:
+                  - data
+        "403":
+          description: Not a doctor account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Profile already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/doctors/me/availability/rules:
+    post:
+      tags:
+        - Availability
+      summary: Add a recurring weekly availability rule
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weekday:
+                  type: integer
+                  minimum: 0
+                  maximum: 6
+                startTime:
+                  type: string
+                  pattern: ^([01]\d|2[0-3]):[0-5]\d$
+                endTime:
+                  type: string
+                  pattern: ^([01]\d|2[0-3]):[0-5]\d$
+                slotMinutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 240
+                  default: 30
+                timezone:
+                  type: string
+                  default: Asia/Kolkata
+                validFrom:
+                  type: string
+                  format: date
+                validTo:
+                  type: string
+                  format: date
+              required:
+                - weekday
+                - startTime
+                - endTime
+      responses:
+        "201":
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                    required:
+                      - id
+                required:
+                  - data
+  /api/v1/doctors/me/availability/generate:
+    post:
+      tags:
+        - Availability
+      summary: Materialise slots from rules for a date range
+      security:
+        - bearerAuth: []
+      description: "Naturally idempotent: re-running over the same window creates no
+        duplicates."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from:
+                  type: string
+                  format: date
+                to:
+                  type: string
+                  format: date
+              required:
+                - from
+                - to
+      responses:
+        "201":
+          description: Slots created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      slotsCreated:
+                        type: number
+                    required:
+                      - slotsCreated
+                required:
+                  - data
+  /api/v1/doctors/{id}/verify:
+    post:
+      tags:
+        - Doctors
+        - Admin
+      summary: Verify a doctor (admin, MFA required)
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+        "401":
+          description: MFA required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/bookings:
+    post:
+      tags:
+        - Bookings
+      summary: Book a slot (idempotent)
+      security:
+        - bearerAuth: []
+      description: "Claims the slot atomically and holds it for SLOT_HOLD_MINUTES
+        pending payment. Concurrent requests for the same slot: exactly one
+        receives 201, the rest receive 409 SLOT_UNAVAILABLE. Requires an
+        Idempotency-Key."
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            description: Required. A UUID that is stable across retries of the same logical
+              request. Retrying with the same key replays the original response
+              instead of repeating the write.
+            example: 8f14e45f-ceea-467a-9c2b-1d7a3f0e1a20
+          required: true
+          name: Idempotency-Key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slotId:
+                  type: string
+                  format: uuid
+                mode:
+                  type: string
+                  enum:
+                    - video
+                    - audio
+                    - chat
+                    - in_person
+                  default: video
+                chiefComplaint:
+                  type: string
+                  minLength: 3
+                  maxLength: 2000
+              required:
+                - slotId
+      responses:
+        "201":
+          description: Slot held, payment pending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/BookingResult"
+                required:
+                  - data
+        "400":
+          description: Missing Idempotency-Key, or the slot is in the past
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: SLOT_UNAVAILABLE, or a request with this key is in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: IDEMPOTENCY_KEY_REUSE — same key, different body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/bookings/{id}/cancel:
+    post:
+      tags:
+        - Bookings
+      summary: Cancel and release the slot
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+            format: uuid
+            description: Required. A UUID that is stable across retries of the same logical
+              request. Retrying with the same key replays the original response
+              instead of repeating the write.
+            example: 8f14e45f-ceea-467a-9c2b-1d7a3f0e1a20
+          required: true
+          name: Idempotency-Key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+              required:
+                - reason
+      responses:
+        "200":
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      consultationId:
+                        type: string
+                      status:
+                        type: string
+                    required:
+                      - consultationId
+                      - status
+                required:
+                  - data
+        "403":
+          description: Not a participant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already completed or cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/payments/{id}/capture:
+    post:
+      tags:
+        - Payments
+      summary: Capture a pending payment and confirm the booking (idempotent)
+      security:
+        - bearerAuth: []
+      description: "Retries are safe: the state transition is guarded in SQL, so a
+        duplicate capture never charges twice. `simulate` exercises the failure
+        paths of the mock provider."
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+            format: uuid
+            description: Required. A UUID that is stable across retries of the same logical
+              request. Retrying with the same key replays the original response
+              instead of repeating the write.
+            example: 8f14e45f-ceea-467a-9c2b-1d7a3f0e1a20
+          required: true
+          name: Idempotency-Key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                simulate:
+                  type: string
+                  enum:
+                    - success
+                    - failure
+                    - timeout
+                  default: success
+      responses:
+        "200":
+          description: Captured
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      paymentId:
+                        type: string
+                      status:
+                        type: string
+                    required:
+                      - paymentId
+                      - status
+                required:
+                  - data
+        "409":
+          description: PAYMENT_DECLINED or invalid payment state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Provider circuit open — slot still held, retry shortly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/consultations:
+    get:
+      tags:
+        - Consultations
+      summary: List the caller's consultations
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - pending_payment
+              - scheduled
+              - in_progress
+              - completed
+              - cancelled
+              - no_show
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: string
+            format: date
+          required: false
+          name: from
+          in: query
+        - schema:
+            type: string
+            format: date
+          required: false
+          name: to
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type:
+              - integer
+              - "null"
+            minimum: 0
+            maximum: 10000
+            default: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Consultations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: {}
+                    required:
+                      - items
+                required:
+                  - data
+  /api/v1/consultations/{id}:
+    get:
+      tags:
+        - Consultations
+      summary: Consultation detail
+      security:
+        - bearerAuth: []
+      description: Participants only. A non-participant receives 404 rather than 403,
+        so the endpoint cannot confirm that an id exists. Clinical notes are
+        visible to the doctor only.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Consultation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+        "404":
+          description: Not found or not yours
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/consultations/{id}/status:
+    post:
+      tags:
+        - Consultations
+      summary: Advance the consultation state machine
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - in_progress
+                    - completed
+                    - no_show
+              required:
+                - status
+      responses:
+        "200":
+          description: Transitioned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+        "409":
+          description: INVALID_TRANSITION
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/consultations/{id}/notes:
+    put:
+      tags:
+        - Consultations
+      summary: Save encrypted clinical notes (doctor only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+              required:
+                - notes
+      responses:
+        "204":
+          description: Saved
+  /api/v1/prescriptions:
+    post:
+      tags:
+        - Prescriptions
+      summary: Issue a prescription (doctor, MFA required, idempotent)
+      security:
+        - bearerAuth: []
+      description: The clinical payload is envelope-encrypted at rest. Every read is
+        audited.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            description: Required. A UUID that is stable across retries of the same logical
+              request. Retrying with the same key replays the original response
+              instead of repeating the write.
+            example: 8f14e45f-ceea-467a-9c2b-1d7a3f0e1a20
+          required: true
+          name: Idempotency-Key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                consultationId:
+                  type: string
+                  format: uuid
+                diagnosis:
+                  type: string
+                  minLength: 3
+                  maxLength: 2000
+                medicines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      dosage:
+                        type: string
+                        minLength: 1
+                        maxLength: 100
+                      frequency:
+                        type: string
+                        minLength: 1
+                        maxLength: 100
+                      durationDays:
+                        type: integer
+                        minimum: 1
+                        maximum: 365
+                      instructions:
+                        type: string
+                        maxLength: 500
+                    required:
+                      - name
+                      - dosage
+                      - frequency
+                      - durationDays
+                  minItems: 1
+                  maxItems: 30
+                advice:
+                  type: string
+                  maxLength: 2000
+                followUpDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
+              required:
+                - consultationId
+                - diagnosis
+                - medicines
+      responses:
+        "201":
+          description: Issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      issuedAt:
+                        type: string
+                    required:
+                      - id
+                      - issuedAt
+                required:
+                  - data
+        "401":
+          description: MFA required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Consultation has not started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags:
+        - Prescriptions
+      summary: List the caller's prescriptions (metadata only)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Prescriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: {}
+                    required:
+                      - items
+                required:
+                  - data
+  /api/v1/prescriptions/{id}:
+    get:
+      tags:
+        - Prescriptions
+      summary: Decrypted prescription
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Prescription
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+        "404":
+          description: Not found or not yours
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/analytics/overview:
+    get:
+      tags:
+        - Admin
+      summary: Platform overview (admin, MFA required)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Counters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {}
+  /api/v1/admin/analytics/consultations:
+    get:
+      tags:
+        - Admin
+      summary: Consultation volume over time
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: date
+          required: true
+          name: from
+          in: query
+        - schema:
+            type: string
+            format: date
+          required: true
+          name: to
+          in: query
+        - schema:
+            type: string
+            enum:
+              - day
+              - week
+              - month
+            default: day
+          required: false
+          name: groupBy
+          in: query
+      responses:
+        "200":
+          description: Trend
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {}
+                required:
+                  - data
+  /api/v1/admin/audit-logs:
+    get:
+      tags:
+        - Admin
+      summary: Search the audit trail (admin, MFA required)
+      security:
+        - bearerAuth: []
+      description: The audit trail is append-only, enforced by a database trigger.
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {}
+                required:
+                  - data
+  /health/live:
+    get:
+      tags:
+        - Operations
+      summary: Liveness — is the process up?
+      description: Touches no dependency. Used as the orchestrator restart signal.
+      responses:
+        "200":
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  uptime:
+                    type: number
+                required:
+                  - status
+                  - uptime
+  /health/ready:
+    get:
+      tags:
+        - Operations
+      summary: Readiness — should this instance receive traffic?
+      description: "Requires Postgres and applied migrations. Redis being down does
+        NOT make the instance unready: the service degrades to uncached reads
+        and keeps serving correctly."
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema: {}
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema: {}
+  /metrics:
+    get:
+      tags:
+        - Operations
+      summary: Prometheus metrics
+      description: Exposed on the metrics network only in production, never on the
+        public ingress.
+      responses:
+        "200":
+          description: Prometheus text exposition format
+webhooks: {}
