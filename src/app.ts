@@ -9,6 +9,7 @@ import { metricsMiddleware, registry } from './telemetry/metrics.js';
 import { healthCheck } from './db/pool.js';
 import { cacheHealth, isCacheEnabled } from './cache/redis.js';
 import { areMigrationsApplied } from './lib/readiness.js';
+import { forbidden } from './lib/errors.js';
 import { authRoutes } from './modules/auth/authRoutes.js';
 import { doctorRoutes } from './modules/doctors/doctorRoutes.js';
 import { bookingRoutes } from './modules/booking/bookingRoutes.js';
@@ -47,7 +48,11 @@ export function createApp(overrides: ContainerOverrides = {}): Express {
       // misconfiguration.
       origin: (origin, callback) => {
         if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
-        callback(new Error('Origin not allowed by CORS'));
+        // An AppError, not a bare Error. A bare Error reaches the handler as
+        // an unrecognised failure and becomes a 500, which is both wrong (the
+        // client's origin is a client problem) and actively harmful: rejected
+        // origins would count against the 5xx error budget and page someone.
+        callback(forbidden('Origin not allowed by CORS'));
       },
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id'],

@@ -17,9 +17,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "npm run test:unit",
-    "test:unit": "node --import tsx --env-file=.env.test --test test/unit/crypto.test.ts test/unit/totp.test.ts test/unit/retry.test.ts test/unit/authorization.test.ts",
+    "test:unit": "node --import tsx --env-file=.env.test --test test/unit/config.test.ts test/unit/crypto.test.ts test/unit/totp.test.ts test/unit/retry.test.ts test/unit/authorization.test.ts",
     "test:integration": "node --import tsx --env-file=.env.test --test test/integration/auth.test.ts test/integration/booking.concurrency.test.ts test/integration/idempotency.test.ts",
-    "test:all": "node --import tsx --env-file=.env.test --test test/unit/crypto.test.ts test/unit/totp.test.ts test/unit/retry.test.ts test/unit/authorization.test.ts test/integration/auth.test.ts test/integration/booking.concurrency.test.ts test/integration/idempotency.test.ts",
+    "test:all": "node --import tsx --env-file=.env.test --test test/unit/config.test.ts test/unit/crypto.test.ts test/unit/totp.test.ts test/unit/retry.test.ts test/unit/authorization.test.ts test/integration/auth.test.ts test/integration/booking.concurrency.test.ts test/integration/idempotency.test.ts",
     "test:integration:ci": "node --import tsx --test test/integration/auth.test.ts test/integration/booking.concurrency.test.ts test/integration/idempotency.test.ts"
   },
   "dependencies": {
