@@ -163,7 +163,7 @@ jobs:
             -e DATABASE_URL=postgresql://nobody@127.0.0.1:5432/none \
             -e JWT_SECRET=smoke-test-secret-that-is-long-enough-here \
             -e DATA_MASTER_KEY=c21va2UtdGVzdC0zMi1ieXRlLWtleS0wMDAwMDAwMA== \
-            -e IP_HASH_SALT=smoke-test-salt \
+            -e IP_HASH_SALT=smoke-test-ip-hash-salt-value \
             -p 3000:3000 amrutam-telemedicine:${{ github.sha }}
           # The database is deliberately absent: liveness must still answer,
           # which proves the process starts and serves before its dependencies
