@@ -73,6 +73,12 @@ jobs:
       IP_HASH_SALT: ci-only-ip-hash-salt
       WORKER_ENABLED: 'false'
       OTEL_ENABLED: 'false'
+      # The suites register dozens of accounts from one address, which the
+      # production auth limit (10/min/IP) is specifically designed to stop.
+      # Limits are raised here so the tests exercise booking and idempotency
+      # rather than the rate limiter; the limiter has its own unit coverage.
+      RATE_LIMIT_MAX: '100000'
+      RATE_LIMIT_AUTH_MAX: '100000'
 
     steps:
       - uses: actions/checkout@v4
@@ -139,8 +145,11 @@ jobs:
 
       # Scans the image we actually built, not just the manifests — this
       # catches vulnerable OS packages in the base image too.
+      # Tracks the action's master branch. In a real deployment this would be
+      # pinned to a commit digest; a floating tag in a security gate is itself
+      # a supply-chain risk.
       - name: Scan image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: amrutam-telemedicine:${{ github.sha }}
           format: table
