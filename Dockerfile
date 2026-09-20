@@ -31,7 +31,12 @@ ENV NODE_OPTIONS="--max-old-space-size=384"
 
 # Signal handling: without an init, PID 1 is node and SIGTERM handling during
 # `docker stop` is unreliable — which breaks graceful shutdown.
-RUN apk add --no-cache tini
+# `apk upgrade` pulls the current security patches for the base image's own
+# packages — OpenSSL in particular, which lags in published node:alpine tags.
+# Without it the image ships known-fixed CVEs simply because the base tag was
+# built before the patch landed.
+RUN apk add --no-cache tini \
+  && apk upgrade --no-cache --available
 
 # Remove npm from the runtime image.
 #
