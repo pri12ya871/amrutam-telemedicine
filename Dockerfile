@@ -33,6 +33,15 @@ ENV NODE_OPTIONS="--max-old-space-size=384"
 # `docker stop` is unreliable — which breaks graceful shutdown.
 RUN apk add --no-cache tini
 
+# Remove npm from the runtime image.
+#
+# The container runs `node dist/index.js` and never installs a package, so a
+# package manager here is pure attack surface: npm bundles its own copies of
+# tar, pacote and sigstore, and their CVEs were the only findings in the image
+# scan. Deleting it removes a real (if small) risk and ~15MB, rather than
+# suppressing the finding with an ignore file.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
