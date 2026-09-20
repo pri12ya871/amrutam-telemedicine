@@ -1,5 +1,7 @@
 # Amrutam Telemedicine — Backend
 
+[![CI](https://github.com/pri12ya871/amrutam-telemedicine/actions/workflows/ci.yml/badge.svg)](https://github.com/pri12ya871/amrutam-telemedicine/actions/workflows/ci.yml)
+
 Production-grade backend for a telemedicine platform: user lifecycle, doctor availability,
 race-free booking, consultation lifecycle, encrypted prescriptions, compliance audit trails and
 admin analytics.
@@ -126,9 +128,12 @@ npm run openapi          # regenerate openapi.yaml / openapi.json from the Zod s
 k6 run load/booking.k6.js
 ```
 
-**Unit tests need no infrastructure** (55 of them: crypto, TOTP against RFC vectors, retry and
-circuit breaker, the RBAC matrix, the consultation state machine). Integration tests skip cleanly
-when no database is reachable, and always run in CI against real Postgres and Redis.
+**77 tests, all green in CI.**
+
+The 55 unit tests need no infrastructure — crypto, TOTP against the RFC 4226 vectors, retry and
+circuit breaker, the RBAC matrix, the consultation state machine. The 22 integration tests run
+against real Postgres and Redis service containers on every push, and skip cleanly on a laptop
+with no database so `npm test` works on a fresh clone.
 
 ---
 
@@ -245,7 +250,7 @@ Highlights:
 | **quality** | typecheck · build · 55 unit tests |
 | **integration** | real Postgres + Redis service containers · migrations · concurrency and idempotency suites |
 | **security** | `npm audit` (high+, prod deps) · gitleaks over full history · CodeQL |
-| **image** | multi-stage Docker build · Trivy scan (HIGH/CRITICAL fail) · smoke test |
+| **image** | multi-stage Docker build · Trivy scan (HIGH/CRITICAL fail, **0 findings**) · smoke test |
 
 The image smoke test starts the container **with no database reachable** and asserts liveness still
 answers — proving the process starts before its dependencies and that readiness, not liveness, is
