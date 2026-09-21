@@ -17,6 +17,7 @@ import { consultationRoutes } from './modules/consultations/consultationRoutes.j
 import { prescriptionRoutes } from './modules/prescriptions/prescriptionRoutes.js';
 import { paymentRoutes } from './modules/payments/paymentRoutes.js';
 import { adminRoutes } from './modules/admin/adminRoutes.js';
+import { docsRoutes } from './docsRoutes.js';
 
 export function createApp(overrides: ContainerOverrides = {}): Express {
   const container = createContainer(overrides);
@@ -115,6 +116,7 @@ export function createApp(overrides: ContainerOverrides = {}): Express {
   v1.use('/admin', adminRoutes());
 
   app.use('/api/v1', v1);
+  app.use(docsRoutes());
 
   app.use(notFoundHandler);
   app.use(errorHandler);

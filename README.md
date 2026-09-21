@@ -72,7 +72,8 @@ cd amrutam-telemedicine
 docker compose up -d --build
 ```
 
-API on `http://localhost:3000`. Migrations apply automatically at boot.
+API on `http://localhost:3000`, with **interactive docs at `/docs`**. Migrations apply
+automatically at boot.
 
 ```bash
 docker compose exec api node --import tsx scripts/seed.ts   # demo data
@@ -128,9 +129,9 @@ npm run openapi          # regenerate openapi.yaml / openapi.json from the Zod s
 k6 run load/booking.k6.js
 ```
 
-**77 tests, all green in CI.**
+**88 tests, all green in CI.**
 
-The 55 unit tests need no infrastructure — crypto, TOTP against the RFC 4226 vectors, retry and
+The 66 unit tests need no infrastructure — crypto, TOTP against the RFC 4226 vectors, retry and
 circuit breaker, the RBAC matrix, the consultation state machine. The 22 integration tests run
 against real Postgres and Redis service containers on every push, and skip cleanly on a laptop
 with no database so `npm test` works on a fresh clone.
@@ -171,8 +172,9 @@ curl -si localhost:3000/api/v1/bookings -H "authorization: Bearer $TOKEN" \
 ## API
 
 `openapi.yaml` / `openapi.json` — **29 paths, generated from the same Zod schemas the server
-validates with**, so the spec cannot drift from the implementation. Paste into
-[editor.swagger.io](https://editor.swagger.io) to browse.
+validates with**, so the spec cannot drift from the implementation. The running service renders
+it at **`/docs`** and serves the raw document at `/openapi.json`; the root `/` lists every entry
+point.
 
 | Area | Endpoints |
 |---|---|
@@ -184,7 +186,7 @@ validates with**, so the spec cannot drift from the implementation. Paste into
 | Consultations | list · detail · state transition · encrypted notes |
 | Prescriptions | issue (MFA + idempotent) · list · detail · revoke |
 | Admin | overview · trends · top doctors · utilisation · audit-log search |
-| Operations | `/health/live` · `/health/ready` · `/metrics` |
+| Operations | `/` (service index) · `/docs` · `/openapi.json` · `/health/live` · `/health/ready` · `/metrics` |
 
 Errors are always `{ "error": { "code", "message", "requestId" } }`.
 
